@@ -579,6 +579,7 @@ def _parse_marshmallow_json(data: dict) -> list[dict]:
         })
     return turns
 
+
 def _parse_claude_json(data: dict | list) -> list[dict]:
     """Parse Claude.ai export JSON → [{role, content, timestamp}, ...]"""
     turns = []
@@ -927,6 +928,7 @@ def chunk_turns(turns: list[dict], target_tokens: int = _CHUNK_TARGET_TOKENS, hu
         )
 
     return chunks
+
 
 def _detect_preview_format(raw_content: str, filename: str, warnings: list[str]) -> str:
     ext = Path(filename).suffix.lower() if filename else ""
