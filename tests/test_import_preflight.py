@@ -102,6 +102,92 @@ def test_preview_structured_memory_json_requires_no_llm():
     assert preview["requires_llm"] is False
 
 
+def test_marshmallow_export_preserves_sender_roles_and_names():
+    from import_memory import detect_and_parse, preview_import
+
+    raw = json.dumps({
+        "kind": "marshmallow-chat-export",
+        "version": 1,
+        "exportedAt": "2026-11-16T11:43:32+08:00",
+        "conversation": {"type": "private", "name": "江玥影"},
+        "messages": [
+            {
+                "id": "user-1",
+                "senderId": "user",
+                "senderName": "阿淸",
+                "type": "text",
+                "content": "这是用户说的话。",
+                "timestamp": "2026-09-20T13:04:00+08:00",
+            },
+            {
+                "id": "char-1",
+                "senderId": "char_jiang",
+                "senderName": "江玥影",
+                "type": "text",
+                "content": "这是角色说的话。",
+                "timestamp": "2026-09-20T13:04:01+08:00",
+            },
+            {
+                "id": "narrator-1",
+                "senderId": "narrator",
+                "senderName": "旁白",
+                "type": "text",
+                "content": "场景旁白。",
+                "timestamp": "2026-09-20T13:04:02+08:00",
+            },
+            {
+                "id": "system-1",
+                "senderId": "system",
+                "senderName": "系统",
+                "type": "system",
+                "content": "系统事件。",
+                "timestamp": "2026-09-20T13:04:03+08:00",
+            },
+        ],
+    }, ensure_ascii=False)
+
+    turns = detect_and_parse(raw, filename="marshmallow.json")
+    assert [turn["role"] for turn in turns] == [
+        "user", "assistant", "narrator", "system"
+    ]
+    assert [turn["speaker"] for turn in turns] == [
+        "阿淸", "江玥影", "旁白", "系统"
+    ]
+    assert turns[1]["timestamp"] == "2026-09-20T13:04:01+08:00"
+    assert turns[1]["message_id"] == "char-1"
+
+    preview = preview_import(raw, filename="marshmallow.json", human_label="阿淸")
+    assert preview["detected_format"] == "marshmallow_json"
+    assert preview["turns_count"] == 4
+    assert "[阿淸]" in preview["first_chunk_preview"]
+    assert "[江玥影]" in preview["first_chunk_preview"]
+    assert "[旁白]" in preview["first_chunk_preview"]
+    assert "[系统]" in preview["first_chunk_preview"]
+
+
+def test_marshmallow_export_uses_inline_text_when_message_content_is_empty():
+    from import_memory import detect_and_parse
+
+    raw = json.dumps({
+        "kind": "marshmallow-chat-export",
+        "conversation": {"name": "江玥影"},
+        "messages": [{
+            "id": "sticker-1",
+            "senderId": "char_jiang",
+            "senderName": "江玥影",
+            "type": "sticker",
+            "content": "",
+            "metadata": {"inlineText": "[发送贴纸：晚安]"},
+            "timestamp": "2026-09-20T13:05:00+08:00",
+        }],
+    }, ensure_ascii=False)
+
+    turns = detect_and_parse(raw, filename="marshmallow.json")
+    assert len(turns) == 1
+    assert turns[0]["role"] == "assistant"
+    assert turns[0]["content"] == "[发送贴纸：晚安]"
+
+
 def test_preview_claude_conversations_uses_claude_parser():
     from import_memory import preview_import
 
