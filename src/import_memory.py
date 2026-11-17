@@ -819,91 +819,114 @@ def _split_oversized_turn(
 def chunk_turns(turns: list[dict], target_tokens: int = _CHUNK_TARGET_TOKENS, human_label: str = "用户") -> list[dict]:
     """
     按对话轮次边界将对话分为 ~target_tokens 大小的窗口。
-    返回 {content, timestamp_start, timestamp_end, turn_count} 列表。
-    human_label：对话中「用户」那一侧的称呼，默认「用户」，可传入 config["human"] 使内容更个人化。
+    分块保留源消息 ID、时间戳、发言人和消息类型，供后续来源追溯使用。
     """
     if target_tokens <= 0:
         raise ValueError("target_tokens 必须为正数")
 
     chunks: list[dict] = []
     current_lines: list[str] = []
+    current_sources: list[dict] = []
     current_tokens = 0
     first_ts = ""
     last_ts = ""
     turn_count = 0
 
+    def source_record(turn: dict) -> dict:
+        return {
+            "message_id": str(turn.get("message_id") or ""),
+            "timestamp": turn.get("timestamp", ""),
+            "sender_id": str(turn.get("sender_id") or ""),
+            "speaker": str(turn.get("speaker") or ""),
+            "message_type": str(turn.get("message_type") or ""),
+        }
+
+    def append_chunk(
+        content: str,
+        timestamp_start: object,
+        timestamp_end: object,
+        source_messages: list[dict],
+        count: int,
+    ) -> None:
+        chunks.append({
+            "content": content,
+            "timestamp_start": timestamp_start,
+            "timestamp_end": timestamp_end,
+            "turn_count": count,
+            "source_messages": list(source_messages),
+        })
+
     for turn in turns:
         role_label = (
             human_label
             if turn["role"] in ("user", "human")
-            else str(turn.get("speaker") or ("旁白" if turn["role"] == "narrator" else "系统" if turn["role"] == "system" else "AI"))
+            else str(turn.get("speaker") or (
+                "旁白" if turn["role"] == "narrator"
+                else "系统" if turn["role"] == "system"
+                else "AI"
+            ))
         )
         line_prefix = f"[{role_label}] "
         turn_content = str(turn.get("content", ""))
         line = line_prefix + turn_content
         line_tokens = count_tokens_approx(line)
-        # 逐行估算会在每行向下取整，直接相加会系统性低估许多短消息。
-        # 每行额外预留 1 token，同时覆盖行间换行符，形成完整分块的安全上界。
         line_budget = line_tokens + 1
+        source = source_record(turn)
 
-        # 纯文本导出可能只有一个超长轮次；必须先拆分轮次本身，
-        # 否则整段塞入单个分块会迫使后续流程静默截断。
         if line_tokens > target_tokens:
-            # Flush current
             if current_lines:
-                chunks.append({
-                    "content": "\n".join(current_lines),
-                    "timestamp_start": first_ts,
-                    "timestamp_end": last_ts,
-                    "turn_count": turn_count,
-                })
+                append_chunk(
+                    "\n".join(current_lines), first_ts, last_ts,
+                    current_sources, turn_count,
+                )
                 current_lines = []
+                current_sources = []
                 current_tokens = 0
                 turn_count = 0
                 first_ts = ""
+                last_ts = ""
 
             for part in _split_oversized_turn(
                 turn_content,
                 line_prefix=line_prefix,
                 target_tokens=target_tokens,
             ):
-                chunks.append({
-                    "content": part,
-                    "timestamp_start": turn.get("timestamp", ""),
-                    "timestamp_end": turn.get("timestamp", ""),
-                    "turn_count": 1,
-                })
+                append_chunk(
+                    part,
+                    turn.get("timestamp", ""),
+                    turn.get("timestamp", ""),
+                    [source],
+                    1,
+                )
             continue
 
         if current_tokens + line_budget > target_tokens and current_lines:
-            chunks.append({
-                "content": "\n".join(current_lines),
-                "timestamp_start": first_ts,
-                "timestamp_end": last_ts,
-                "turn_count": turn_count,
-            })
+            append_chunk(
+                "\n".join(current_lines), first_ts, last_ts,
+                current_sources, turn_count,
+            )
             current_lines = []
+            current_sources = []
             current_tokens = 0
             turn_count = 0
             first_ts = ""
+            last_ts = ""
 
         if not first_ts:
             first_ts = turn.get("timestamp", "")
         last_ts = turn.get("timestamp", "")
         current_lines.append(line)
+        current_sources.append(source)
         current_tokens += line_budget
         turn_count += 1
 
     if current_lines:
-        chunks.append({
-            "content": "\n".join(current_lines),
-            "timestamp_start": first_ts,
-            "timestamp_end": last_ts,
-            "turn_count": turn_count,
-        })
+        append_chunk(
+            "\n".join(current_lines), first_ts, last_ts,
+            current_sources, turn_count,
+        )
 
     return chunks
-
 
 def _detect_preview_format(raw_content: str, filename: str, warnings: list[str]) -> str:
     ext = Path(filename).suffix.lower() if filename else ""
