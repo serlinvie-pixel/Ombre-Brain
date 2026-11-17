@@ -352,6 +352,60 @@ def _strip_md_fence(raw: str) -> str:
 # 格式解析器 — 将任意格式标准化为对话轮次
 # ============================================================
 
+def _parse_marshmallow_json(data: dict) -> list[dict]:
+    """Parse Marshmallow chat export without collapsing every sender into user."""
+    turns = []
+    messages = data.get("messages", [])
+    if not isinstance(messages, list):
+        return turns
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+
+        sender_id = str(msg.get("senderId") or "").strip()
+        sender_name = str(msg.get("senderName") or "").strip()
+        sender_name_lower = sender_name.lower()
+        if sender_id in {"user", "human"}:
+            role = "user"
+        elif sender_id == "system" or sender_name_lower in {"系统", "system"}:
+            role = "system"
+        elif sender_name_lower in {"旁白", "narrator"}:
+            role = "narrator"
+        else:
+            # Character IDs (e.g. char_...) and named non-user senders are
+            # assistant-side content, never user statements.
+            role = "assistant"
+
+        content = msg.get("content", msg.get("text", ""))
+        if isinstance(content, list):
+            content = " ".join(
+                str(part.get("text", "")) if isinstance(part, dict) else str(part)
+                for part in content
+            )
+        elif isinstance(content, dict):
+            parts = content.get("parts", [])
+            content = " ".join(str(part) for part in parts) if isinstance(parts, list) else ""
+        if not isinstance(content, str):
+            content = str(content or "")
+
+        metadata = msg.get("metadata")
+        if not content.strip() and isinstance(metadata, dict):
+            content = str(metadata.get("inlineText") or "")
+        if not content.strip():
+            continue
+
+        turns.append({
+            "role": role,
+            "speaker": sender_name or ("用户" if role == "user" else role),
+            "content": content.strip(),
+            "timestamp": msg.get("timestamp", ""),
+            "message_id": msg.get("id", ""),
+            "message_type": msg.get("type", "text"),
+        })
+    return turns
+
+
 def _parse_claude_json(data: dict | list) -> list[dict]:
     """Parse Claude.ai export JSON → [{role, content, timestamp}, ...]"""
     turns = []
@@ -485,6 +539,21 @@ def detect_and_parse(raw_content: str, filename: str = "") -> list[dict]:
                 sample = data
 
             if isinstance(sample, dict):
+                messages = sample.get("messages")
+                is_marshmallow = (
+                    isinstance(messages, list)
+                    and (
+                        isinstance(sample.get("conversation"), dict)
+                        or str(sample.get("kind", "")).lower().startswith("marshmallow")
+                        or any(
+                            isinstance(message, dict)
+                            and ("senderId" in message or "senderName" in message)
+                            for message in messages[:5]
+                        )
+                    )
+                )
+                if is_marshmallow:
+                    return _parse_marshmallow_json(sample)
                 if "chat_messages" in sample:
                     return _parse_claude_json(data)
                 if "mapping" in sample:
@@ -591,7 +660,11 @@ def chunk_turns(turns: list[dict], target_tokens: int = _CHUNK_TARGET_TOKENS, hu
     turn_count = 0
 
     for turn in turns:
-        role_label = human_label if turn["role"] in ("user", "human") else "AI"
+        role_label = (
+            human_label
+            if turn["role"] in ("user", "human")
+            else str(turn.get("speaker") or ("旁白" if turn["role"] == "narrator" else "系统" if turn["role"] == "system" else "AI"))
+        )
         line_prefix = f"[{role_label}] "
         turn_content = str(turn.get("content", ""))
         line = line_prefix + turn_content
@@ -672,6 +745,20 @@ def _detect_preview_format(raw_content: str, filename: str, warnings: list[str])
             data = json.loads(raw_content)
             sample = data[0] if isinstance(data, list) and data else data
             if isinstance(sample, dict):
+                messages = sample.get("messages")
+                if (
+                    isinstance(messages, list)
+                    and (
+                        isinstance(sample.get("conversation"), dict)
+                        or str(sample.get("kind", "")).lower().startswith("marshmallow")
+                        or any(
+                            isinstance(message, dict)
+                            and ("senderId" in message or "senderName" in message)
+                            for message in messages[:5]
+                        )
+                    )
+                ):
+                    return "marshmallow_json"
                 if "chat_messages" in sample:
                     return "claude_json"
                 if "mapping" in sample:
