@@ -493,8 +493,14 @@ def test_marshmallow_export_preserves_special_speakers_and_message_types():
                     "bundleTitle": "旧聊天",
                     "fromChatId": "chat_other",
                     "items": [
-                        {"senderId": "user", "senderName": "阿淸", "type": "text", "content": "引用用户内容"},
-                        {"senderId": "char_other", "senderName": "另一角色", "type": "text", "content": "引用角色内容"},
+                        {
+                            "senderId": "user", "senderName": "阿淸",
+                            "type": "text", "content": "引用用户内容",
+                        },
+                        {
+                            "senderId": "char_other", "senderName": "另一角色",
+                            "type": "text", "content": "引用角色内容",
+                        },
                     ],
                 },
                 "timestamp": 1789880890824,
