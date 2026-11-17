@@ -352,8 +352,186 @@ def _strip_md_fence(raw: str) -> str:
 # 格式解析器 — 将任意格式标准化为对话轮次
 # ============================================================
 
+def _marshmallow_plain_text(value: Any) -> str:
+    """Extract textual parts without ever stringifying binary/data-URL payloads."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for part in value:
+            if isinstance(part, dict):
+                text = _marshmallow_plain_text(
+                    part.get("text", part.get("content", ""))
+                )
+            else:
+                text = str(part)
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    if isinstance(value, dict):
+        parts = value.get("parts")
+        if isinstance(parts, list):
+            return _marshmallow_plain_text(parts)
+    return ""
+
+
+def _render_marshmallow_message(msg: dict, depth: int = 0) -> str:
+    """Render one Marshmallow message as safe, readable transcript text."""
+    message_type = str(msg.get("type") or "text")
+    content = _marshmallow_plain_text(msg.get("content", msg.get("text", ""))).strip()
+    metadata = msg.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+
+    if message_type == "text":
+        return content
+    if message_type == "sticker":
+        inline_text = str(metadata.get("inlineText") or "").strip()
+        if inline_text:
+            return inline_text
+        if content and not content.startswith(("http://", "https://", "data:")):
+            return content
+        sticker_name = str(metadata.get("stickerName") or "").strip()
+        return f"[贴纸：{sticker_name}]" if sticker_name else "[贴纸]"
+    if message_type == "voice":
+        transcript = str(
+            metadata.get("text") or metadata.get("translation") or ""
+        ).strip()
+        return transcript or "[语音消息]"
+    if message_type == "image":
+        description = str(
+            metadata.get("summary")
+            or metadata.get("caption")
+            or metadata.get("prompt")
+            or ""
+        ).strip()
+        if description:
+            label = "图片生成描述" if metadata.get("prompt") and not (
+                metadata.get("summary") or metadata.get("caption")
+            ) else "图片描述"
+            return f"[{label}：{description}]"
+        return "[图片消息]"
+    if message_type == "voiceCall":
+        transcript = str(metadata.get("transcript") or "").strip()
+        if transcript:
+            return f"[通话记录]\n{transcript}"
+        entries = metadata.get("callEntries")
+        if isinstance(entries, list):
+            lines = []
+            for entry in entries:
+                if not isinstance(entry, dict) or not entry.get("text"):
+                    continue
+                speaker = (
+                    entry.get("speakerName")
+                    or entry.get("from")
+                    or "通话方"
+                )
+                lines.append(f"{speaker}：{entry['text']}")
+            if lines:
+                return "[通话记录]\n" + "\n".join(lines)
+        return content or "[通话记录]"
+    if message_type == "chatBundle":
+        if depth >= 3:
+            return f"[合并转发：{metadata.get('bundleTitle') or content or '内容层级过深'}]"
+        items = metadata.get("items")
+        if isinstance(items, list):
+            lines = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                body = _render_marshmallow_message(item, depth + 1)
+                if body:
+                    speaker = str(item.get("senderName") or "未知发言人")
+                    lines.append(f"{speaker}：{body}")
+            title = str(metadata.get("bundleTitle") or content or "合并转发")
+            source = str(metadata.get("fromChatId") or "来源未标注")
+            return (
+                f"[合并转发：{title}；来源会话：{source}]\n"
+                + "\n".join(lines)
+            )
+        return content or "[合并转发]"
+    if message_type == "chatAction":
+        return str(metadata.get("actionText") or content).strip()
+    if message_type == "link":
+        title = str(metadata.get("title") or "").strip()
+        description = str(
+            metadata.get("descFull")
+            or metadata.get("desc")
+            or metadata.get("description")
+            or ""
+        ).strip()
+        return "\n".join(part for part in (title, description, content) if part)
+    if message_type in {"transfer", "transferReceipt"}:
+        details = [content]
+        amount = metadata.get("amount")
+        note = metadata.get("transferNote")
+        state = metadata.get("transferState")
+        if amount and str(amount) not in content:
+            details.append(f"金额：{amount}")
+        if note:
+            details.append(f"备注：{note}")
+        if state:
+            details.append(f"状态：{state}")
+        return "\n".join(part for part in details if part)
+    if message_type == "orderShare":
+        details = [content]
+        for label, key in (
+            ("商品", "productTitle"),
+            ("价格", "orderPrice"),
+            ("平台", "orderPlatform"),
+            ("备注", "orderNote"),
+        ):
+            value = metadata.get(key)
+            if value and str(value) not in content:
+                details.append(f"{label}：{value}")
+        return "\n".join(part for part in details if part)
+    if message_type == "contactCard":
+        card = metadata.get("contactCard")
+        card = card if isinstance(card, dict) else {}
+        details = [content]
+        for label, key in (("联系人", "name"), ("简介", "bio"), ("关系", "relation")):
+            if card.get(key):
+                details.append(f"{label}：{card[key]}")
+        return "\n".join(part for part in details if part)
+    if message_type == "npcCard":
+        details = [
+            content,
+            f"人物：{metadata['npcName']}" if metadata.get("npcName") else "",
+            f"简介：{metadata['npcBio']}" if metadata.get("npcBio") else "",
+            f"关系：{metadata['relation']}" if metadata.get("relation") else "",
+        ]
+        return "\n".join(part for part in details if part)
+    if message_type == "convergenceInvite":
+        details = [
+            content,
+            f"房间：{metadata['roomTitle']}" if metadata.get("roomTitle") else "",
+            f"状态：{metadata['status']}" if metadata.get("status") else "",
+        ]
+        return "\n".join(part for part in details if part)
+    if message_type == "htmlWidget":
+        extension = metadata.get("htmlExtension")
+        extension = extension if isinstance(extension, dict) else {}
+        details = [
+            content,
+            str(extension.get("title") or ""),
+            str(extension.get("content") or ""),
+        ]
+        fields = extension.get("fields")
+        if isinstance(fields, dict):
+            details.extend(
+                f"{key}：{value}"
+                for key, value in fields.items()
+                if value not in (None, "")
+            )
+        return "\n".join(part for part in details if part)
+    if content.startswith("data:"):
+        return f"[{message_type}消息]"
+    return content or f"[{message_type}消息]"
+
+
 def _parse_marshmallow_json(data: dict) -> list[dict]:
-    """Parse Marshmallow chat export without collapsing every sender into user."""
+    """Parse Marshmallow exports while preserving speaker, type and provenance."""
     turns = []
     messages = data.get("messages", [])
     if not isinstance(messages, list):
@@ -365,46 +543,41 @@ def _parse_marshmallow_json(data: dict) -> list[dict]:
 
         sender_id = str(msg.get("senderId") or "").strip()
         sender_name = str(msg.get("senderName") or "").strip()
-        sender_name_lower = sender_name.lower()
-        if sender_id in {"user", "human"}:
-            role = "user"
-        elif sender_id == "system" or sender_name_lower in {"系统", "system"}:
-            role = "system"
-        elif sender_name_lower in {"旁白", "narrator"}:
+        message_type = str(msg.get("type") or "text")
+
+        # senderName must be checked before senderId=system: narrator records
+        # in this export also use senderId="system".
+        if sender_name.lower() in {"旁白", "narrator"}:
             role = "narrator"
-        else:
-            # Character IDs (e.g. char_...) and named non-user senders are
-            # assistant-side content, never user statements.
+        elif sender_name.lower() in {"系统", "system"} or sender_id == "system":
+            role = "system"
+        elif message_type == "chatAction" or sender_name == "聊天动作":
+            role = "action"
+        elif sender_id in {"user", "human"}:
+            role = "user"
+        elif sender_id == "guidance" or sender_name == "本体":
+            role = "guidance"
+        elif sender_id.startswith("char_"):
             role = "assistant"
+        else:
+            role = "other"
 
-        content = msg.get("content", msg.get("text", ""))
-        if isinstance(content, list):
-            content = " ".join(
-                str(part.get("text", "")) if isinstance(part, dict) else str(part)
-                for part in content
-            )
-        elif isinstance(content, dict):
-            parts = content.get("parts", [])
-            content = " ".join(str(part) for part in parts) if isinstance(parts, list) else ""
-        if not isinstance(content, str):
-            content = str(content or "")
-
-        metadata = msg.get("metadata")
-        if not content.strip() and isinstance(metadata, dict):
-            content = str(metadata.get("inlineText") or "")
+        content = _render_marshmallow_message(msg)
         if not content.strip():
             continue
+        if msg.get("recalled") is True:
+            content = f"[已撤回消息] {content}"
 
         turns.append({
             "role": role,
-            "speaker": sender_name or ("用户" if role == "user" else role),
-            "content": content.strip(),
+            "speaker": sender_name or sender_id or "未知发言人",
+            "content": content,
             "timestamp": msg.get("timestamp", ""),
             "message_id": msg.get("id", ""),
-            "message_type": msg.get("type", "text"),
+            "message_type": message_type,
+            "sender_id": sender_id,
         })
     return turns
-
 
 def _parse_claude_json(data: dict | list) -> list[dict]:
     """Parse Claude.ai export JSON → [{role, content, timestamp}, ...]"""
