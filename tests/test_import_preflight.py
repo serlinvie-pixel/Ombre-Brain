@@ -454,3 +454,80 @@ async def test_import_results_rejects_negative_or_non_integer_offset(monkeypatch
     for offset in ("-1", "nan"):
         response = await route(QueryRequest(offset=offset))
         assert response.status_code == 400
+
+
+def test_marshmallow_export_preserves_special_speakers_and_message_types():
+    from import_memory import detect_and_parse
+
+    raw = json.dumps({
+        "kind": "marshmallow-chat-records",
+        "conversation": {"name": "江玥影"},
+        "messages": [
+            {
+                "id": "narrator-1", "senderId": "system", "senderName": "旁白",
+                "type": "system", "content": "场景旁白。", "timestamp": 1789880890819,
+            },
+            {
+                "id": "guidance-1", "senderId": "guidance", "senderName": "本体",
+                "type": "text", "content": "这是对角色逻辑的分析。", "timestamp": 1789880890820,
+            },
+            {
+                "id": "action-1", "senderId": "system", "senderName": "聊天动作",
+                "type": "chatAction", "content": "[聊天动作] 江玥影挥手",
+                "metadata": {"actionText": "江玥影挥手"}, "timestamp": 1789880890821,
+            },
+            {
+                "id": "voice-1", "senderId": "user", "senderName": "阿淸",
+                "type": "voice", "content": "[语音消息]",
+                "metadata": {"text": "语音转写正文"}, "timestamp": 1789880890822,
+            },
+            {
+                "id": "image-1", "senderId": "user", "senderName": "阿淸",
+                "type": "image", "content": "data:image/jpeg;base64,SHOULD_NOT_LEAK",
+                "metadata": {"summary": "图片中的场景描述"}, "timestamp": 1789880890823,
+            },
+            {
+                "id": "bundle-1", "senderId": "user", "senderName": "阿淸",
+                "type": "chatBundle", "content": "[合并转发] 旧聊天",
+                "metadata": {
+                    "bundleTitle": "旧聊天",
+                    "fromChatId": "chat_other",
+                    "items": [
+                        {"senderId": "user", "senderName": "阿淸", "type": "text", "content": "引用用户内容"},
+                        {"senderId": "char_other", "senderName": "另一角色", "type": "text", "content": "引用角色内容"},
+                    ],
+                },
+                "timestamp": 1789880890824,
+            },
+            {
+                "id": "call-1", "senderId": "user", "senderName": "阿淸",
+                "type": "voiceCall", "content": "视频通话",
+                "metadata": {"transcript": "江玥影：通话转写内容"},
+                "timestamp": 1789880890825,
+            },
+            {
+                "id": "recalled-1", "senderId": "char_jiang", "senderName": "江玥影",
+                "type": "text", "content": "这条消息后来撤回了。",
+                "timestamp": 1789880890826, "recalled": True,
+            },
+        ],
+    }, ensure_ascii=False)
+
+    turns = detect_and_parse(raw, filename="marshmallow.json")
+
+    assert [turn["role"] for turn in turns] == [
+        "narrator", "guidance", "action", "user", "user", "user", "user", "assistant"
+    ]
+    assert turns[0]["speaker"] == "旁白"
+    assert turns[1]["speaker"] == "本体"
+    assert turns[2]["content"] == "江玥影挥手"
+    assert turns[3]["content"] == "语音转写正文"
+    assert turns[4]["content"] == "[图片描述：图片中的场景描述]"
+    assert "SHOULD_NOT_LEAK" not in turns[4]["content"]
+    assert "另一角色：引用角色内容" in turns[5]["content"]
+    assert "来源会话：chat_other" in turns[5]["content"]
+    assert "通话转写内容" in turns[6]["content"]
+    assert turns[7]["content"].startswith("[已撤回消息]")
+    assert turns[3]["message_id"] == "voice-1"
+    assert turns[3]["timestamp"] == 1789880890822
+    assert turns[3]["message_type"] == "voice"
