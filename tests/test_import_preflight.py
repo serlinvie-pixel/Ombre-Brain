@@ -531,3 +531,30 @@ def test_marshmallow_export_preserves_special_speakers_and_message_types():
     assert turns[3]["message_id"] == "voice-1"
     assert turns[3]["timestamp"] == 1789880890822
     assert turns[3]["message_type"] == "voice"
+
+
+def test_chunk_turns_retains_marshmallow_source_message_metadata():
+    from import_memory import chunk_turns
+
+    turns = [
+        {
+            "role": "user", "speaker": "阿淸", "content": "第一句",
+            "timestamp": 1789880890819, "message_id": "msg-user",
+            "message_type": "text", "sender_id": "user",
+        },
+        {
+            "role": "assistant", "speaker": "江玥影", "content": "第二句",
+            "timestamp": 1789880890820, "message_id": "msg-char",
+            "message_type": "voice", "sender_id": "char_jiang",
+        },
+    ]
+
+    chunks = chunk_turns(turns, target_tokens=100, human_label="阿淸")
+
+    assert len(chunks) == 1
+    assert chunks[0]["timestamp_start"] == 1789880890819
+    assert chunks[0]["timestamp_end"] == 1789880890820
+    assert [item["message_id"] for item in chunks[0]["source_messages"]] == [
+        "msg-user", "msg-char"
+    ]
+    assert chunks[0]["source_messages"][1]["message_type"] == "voice"
