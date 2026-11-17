@@ -549,10 +549,10 @@ def _parse_marshmallow_json(data: dict) -> list[dict]:
         # in this export also use senderId="system".
         if sender_name.lower() in {"旁白", "narrator"}:
             role = "narrator"
-        elif sender_name.lower() in {"系统", "system"} or sender_id == "system":
-            role = "system"
         elif message_type == "chatAction" or sender_name == "聊天动作":
             role = "action"
+        elif sender_name.lower() in {"系统", "system"} or sender_id == "system":
+            role = "system"
         elif sender_id in {"user", "human"}:
             role = "user"
         elif sender_id == "guidance" or sender_name == "本体":
